@@ -142,6 +142,7 @@ public class TestMetricsRegionServer {
     HELPER.assertGauge("l2CacheSize", 456, serverSource);
     HELPER.assertGauge("l2CacheCount", 75, serverSource);
     HELPER.assertCounter("l2CacheEvictionCount", 2000, serverSource);
+    HELPER.assertCounter("l2CacheOversizedBlockRejectCount", 140, serverSource);
     HELPER.assertGauge("l2CacheHitCount", 800, serverSource);
     HELPER.assertGauge("l2CacheHitCachingCount", 800, serverSource);
     HELPER.assertGauge("l2CacheMissCount", 200, serverSource);

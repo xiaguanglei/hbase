@@ -40,6 +40,7 @@ import org.apache.hadoop.hbase.io.asyncfs.monitor.ExcludeDatanodeManager;
 import org.apache.hadoop.hbase.io.hfile.BlockCache;
 import org.apache.hadoop.hbase.io.hfile.CacheStats;
 import org.apache.hadoop.hbase.io.hfile.CombinedBlockCache;
+import org.apache.hadoop.hbase.io.hfile.bucket.BucketCacheStats;
 import org.apache.hadoop.hbase.mob.MobFileCache;
 import org.apache.hadoop.hbase.regionserver.wal.MetricsWALSource;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
@@ -366,6 +367,13 @@ class MetricsRegionServerWrapperImpl implements MetricsRegionServerWrapper {
 
   public long getL2CacheEvictedCount() {
     return this.l2Stats != null ? this.l2Stats.getEvictedCount() : 0L;
+  }
+
+  @Override
+  public long getL2CacheOversizedBlockRejectCount() {
+    return this.l2Stats instanceof BucketCacheStats
+      ? ((BucketCacheStats) this.l2Stats).getOversizedBlockRejectCount()
+      : 0L;
   }
 
   @Override

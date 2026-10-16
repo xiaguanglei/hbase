@@ -421,6 +421,10 @@ public interface MetricsRegionServerSource extends BaseSource, JvmPauseMonitorSo
   String L2_CACHE_COUNT_DESC = "Count of blocks in the L2 cache";
   String L2_CACHE_EVICTION_COUNT = "l2CacheEvictionCount";
   String L2_CACHE_EVICTION_COUNT_DESC = "Count of blocks evicted from the L2 cache";
+  String L2_CACHE_OVERSIZED_BLOCK_REJECT_COUNT = "l2CacheOversizedBlockRejectCount";
+  String L2_CACHE_OVERSIZED_BLOCK_REJECT_COUNT_DESC =
+    "Count of blocks not cached in the L2 cache because they are larger than its largest bucket"
+      + " size. Also counted in " + BLOCK_CACHE_FAILED_INSERTION_COUNT;
   String L2_CACHE_HIT_COUNT = "l2CacheHitCount";
   String L2_CACHE_HIT_COUNT_DESC = "L2 cache hit count.";
   String L2_CACHE_HIT_CACHING_COUNT = "l2CacheHitCachingCount";

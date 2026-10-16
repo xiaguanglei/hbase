@@ -298,6 +298,14 @@ public final class BucketAllocator {
       192 * 1024 + 1024, 256 * 1024 + 1024, 384 * 1024 + 1024, 512 * 1024 + 1024 };
 
   /**
+   * Returns the largest bucket size, i.e. the largest block that can be cached, for the given
+   * configured bucket sizes, or for the default bucket sizes if none are configured.
+   */
+  static int getLargestBucketSize(int[] bucketSizes) {
+    return Ints.max(bucketSizes == null ? DEFAULT_BUCKET_SIZES : bucketSizes);
+  }
+
+  /**
    * Round up the given block size to bucket size, and get the corresponding BucketSizeInfo
    */
   public BucketSizeInfo roundUpToBucketSizeInfo(int blockSize) {

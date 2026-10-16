@@ -19,6 +19,7 @@ package org.apache.hadoop.hbase.io.hfile.bucket;
 
 import static org.apache.hadoop.hbase.io.hfile.BlockCacheFactory.BLOCKCACHE_STATS_PERIODS;
 import static org.apache.hadoop.hbase.io.hfile.BlockCacheFactory.BLOCKCACHE_STATS_PERIOD_MINUTES_KEY;
+import static org.apache.hadoop.hbase.io.hfile.BlockCacheFactory.BUCKET_CACHE_BUCKETS_KEY;
 import static org.apache.hadoop.hbase.io.hfile.BlockCacheFactory.DEFAULT_BLOCKCACHE_STATS_PERIODS;
 import static org.apache.hadoop.hbase.io.hfile.BlockCacheFactory.DEFAULT_BLOCKCACHE_STATS_PERIOD_MINUTES;
 import static org.apache.hadoop.hbase.io.hfile.CacheConfig.BUCKETCACHE_PERSIST_INTERVAL_KEY;
@@ -310,8 +311,12 @@ public class BucketCache implements BlockCache, HeapSize {
   private long persistenceChunkSize;
 
   /* Tracing failed Bucket Cache allocations. */
-  private long allocFailLogPrevTs; // time of previous log event for allocation failure.
+  // Time of previous log event for allocation failure or oversized block. Written by the writer
+  // threads and by the threads caching blocks.
+  private volatile long allocFailLogPrevTs;
   private static final int ALLOCATION_FAIL_LOG_TIME_PERIOD = 60000; // Default 1 minute.
+  /* The largest block that fits in any bucket, larger blocks are rejected before staging. */
+  private final int largestBucketSize;
 
   private transient Map<String, HRegion> onlineRegions;
 
@@ -372,6 +377,7 @@ public class BucketCache implements BlockCache, HeapSize {
     this.cacheState = CacheState.INITIALIZING;
 
     this.allocFailLogPrevTs = 0;
+    this.largestBucketSize = BucketAllocator.getLargestBucketSize(bucketSizes);
 
     for (int i = 0; i < writerThreads.length; ++i) {
       writerQueues.add(new ArrayBlockingQueue<>(writerQLen));
@@ -580,6 +586,9 @@ public class BucketCache implements BlockCache, HeapSize {
   public void cacheBlockWithWait(BlockCacheKey cacheKey, Cacheable cachedItem, boolean inMemory,
     boolean wait) {
     if (isCacheEnabled()) {
+      if (rejectIfOversized(cacheKey, cachedItem)) {
+        return;
+      }
       if (backingMap.containsKey(cacheKey) || ramCache.containsKey(cacheKey)) {
         if (shouldReplaceExistingCacheBlock(cacheKey, cachedItem)) {
           BucketEntry bucketEntry = backingMap.get(cacheKey);
@@ -593,6 +602,40 @@ public class BucketCache implements BlockCache, HeapSize {
         cacheBlockWithWaitInternal(cacheKey, cachedItem, inMemory, wait);
       }
     }
+  }
+
+  /**
+   * A block larger than the largest bucket can never be written to the cache: the writer thread
+   * would fail to allocate it after it has been staged in the RAM cache and a writer queue (and,
+   * for a duplicate, compared against the staged copy). Reject such blocks up front instead.
+   * @return true if the block was rejected
+   */
+  private boolean rejectIfOversized(BlockCacheKey cacheKey, Cacheable cachedItem) {
+    int len = cachedItem.getSerializedLength();
+    // Must match the length RAMQueueEntry#writeToCache asks the BucketAllocator for.
+    if (
+      isCachePersistent() && ioEngine instanceof FileIOEngine && cachedItem instanceof HFileBlock
+    ) {
+      len += Long.BYTES;
+    }
+    if (len <= largestBucketSize) {
+      return false;
+    }
+    // A failed insertion due to size, as LruBlockCache counts blocks over its max block size.
+    cacheStats.failInsert();
+    cacheStats.oversizedBlockRejected();
+    long currTs = EnvironmentEdgeManager.currentTime();
+    if (
+      allocFailLogPrevTs == 0 || (currTs - allocFailLogPrevTs) > ALLOCATION_FAIL_LOG_TIME_PERIOD
+    ) {
+      LOG.warn(
+        "Not caching block {} of size {}, it is larger than the largest bucket size {}; adjust {}"
+          + " to accommodate it if the size seems reasonable. Logged at most once per {} ms.",
+        cacheKey, len, largestBucketSize, BUCKET_CACHE_BUCKETS_KEY,
+        ALLOCATION_FAIL_LOG_TIME_PERIOD);
+      allocFailLogPrevTs = currTs;
+    }
+    return true;
   }
 
   protected boolean shouldReplaceExistingCacheBlock(BlockCacheKey cacheKey, Cacheable newBlock) {
@@ -1039,8 +1082,9 @@ public class BucketCache implements BlockCache, HeapSize {
         : (StringUtils.formatPercent(cacheStats.getHitCachingRatio(), 2) + ", "))
       + "evictions=" + cacheStats.getEvictionCount() + ", " + "evicted="
       + cacheStats.getEvictedCount() + ", " + "evictedPerRun=" + cacheStats.evictedPerEviction()
-      + ", " + "allocationFailCount=" + cacheStats.getAllocationFailCount() + ", blocksCount="
-      + backingMap.size());
+      + ", " + "allocationFailCount=" + cacheStats.getAllocationFailCount()
+      + ", oversizedBlockRejectCount=" + cacheStats.getOversizedBlockRejectCount()
+      + ", blocksCount=" + backingMap.size());
     cacheStats.reset();
 
     bucketAllocator.logDebugStatistics();

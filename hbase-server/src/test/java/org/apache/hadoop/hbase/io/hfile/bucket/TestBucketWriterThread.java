@@ -109,17 +109,48 @@ public class TestBucketWriterThread {
   }
 
   /**
-   * Pass through a too big entry and ensure it is cleared from queues and ramCache. Manually run
-   * the WriterThread.
+   * A too big entry can never be allocated, so it is rejected before being staged in the ramCache
+   * or a writer queue.
+   */
+  @Test
+  public void testTooBigEntryRejectedBeforeQueueing() {
+    Cacheable tooBigCacheable = Mockito.mock(Cacheable.class);
+    Mockito.when(tooBigCacheable.getSerializedLength()).thenReturn(Integer.MAX_VALUE);
+    this.bc.cacheBlock(this.plainKey, tooBigCacheable);
+    assertTrue(q.isEmpty());
+    assertTrue(bc.ramCache.isEmpty());
+    assertTrue(bc.blocksByHFile.isEmpty());
+    assertTrue(bc.getBackingMap().isEmpty());
+    BucketCacheStats stats = (BucketCacheStats) bc.getStats();
+    assertEquals(1, stats.getOversizedBlockRejectCount());
+    // A failed insertion, but not an allocation failure: the writer thread never saw the block.
+    assertEquals(1, stats.getFailedInserts());
+    assertEquals(0, stats.getAllocationFailCount());
+    // logStats() resets the periodic counters, the number of rejected blocks is cumulative.
+    bc.logStats();
+    assertEquals(1, stats.getOversizedBlockRejectCount());
+  }
+
+  /**
+   * Pass a too big entry through the WriterThread anyway and ensure it is cleared from queues and
+   * ramCache. Manually run the WriterThread.
    */
   @Test
   public void testTooBigEntry() throws InterruptedException {
     Cacheable tooBigCacheable = Mockito.mock(Cacheable.class);
     Mockito.when(tooBigCacheable.getSerializedLength()).thenReturn(Integer.MAX_VALUE);
-    this.bc.cacheBlock(this.plainKey, tooBigCacheable);
+    // Bypass cacheBlock, which rejects such an entry up front, to exercise the WriterThread.
+    RAMQueueEntry re = new RAMQueueEntry(this.plainKey, tooBigCacheable, 0, false, false, false);
+    bc.ramCache.putIfAbsent(this.plainKey, re);
+    q.add(re);
     doDrainOfOneEntry(this.bc, this.wt, this.q);
     assertTrue(bc.blocksByHFile.isEmpty());
     assertTrue(bc.getBackingMap().isEmpty());
+    // The WriterThread is unchanged: it counts an allocation failure, not a rejected block.
+    BucketCacheStats stats = (BucketCacheStats) bc.getStats();
+    assertEquals(1, stats.getAllocationFailCount());
+    assertEquals(0, stats.getOversizedBlockRejectCount());
+    assertEquals(0, stats.getFailedInserts());
   }
 
   /**

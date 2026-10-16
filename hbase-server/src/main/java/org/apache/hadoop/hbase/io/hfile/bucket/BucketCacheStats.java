@@ -35,6 +35,11 @@ public class BucketCacheStats extends CacheStats {
 
   /* Tracing failed Bucket Cache allocations. */
   private LongAdder allocationFailCount = new LongAdder();
+  /*
+   * Blocks not cached because they are larger than the largest bucket size. Exported as a metric,
+   * so unlike the counters above it is not cleared by reset().
+   */
+  private final LongAdder oversizedBlockRejectCount = new LongAdder();
 
   BucketCacheStats(int numPeriodsInWindow, int periodTimeInMinutes) {
     super("BucketCache", numPeriodsInWindow, periodTimeInMinutes);
@@ -44,7 +49,8 @@ public class BucketCacheStats extends CacheStats {
   @Override
   public String toString() {
     return super.toString() + ", ioHitsPerSecond=" + getIOHitsPerSecond() + ", ioTimePerHit="
-      + getIOTimePerHit() + ", allocationFailCount=" + getAllocationFailCount();
+      + getIOTimePerHit() + ", allocationFailCount=" + getAllocationFailCount()
+      + ", oversizedBlockRejectCount=" + getOversizedBlockRejectCount();
   }
 
   public void ioHit(long time) {
@@ -77,5 +83,13 @@ public class BucketCacheStats extends CacheStats {
 
   public void allocationFailed() {
     allocationFailCount.increment();
+  }
+
+  public long getOversizedBlockRejectCount() {
+    return oversizedBlockRejectCount.sum();
+  }
+
+  public void oversizedBlockRejected() {
+    oversizedBlockRejectCount.increment();
   }
 }

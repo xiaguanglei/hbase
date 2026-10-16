@@ -506,7 +506,7 @@ public class MetricsRegionServerSourceImpl extends BaseSourceImpl
   }
 
   private MetricsRecordBuilder addGaugesToMetricsRecordBuilder(MetricsRecordBuilder mrb) {
-    return mrb.addGauge(Interns.info(REGION_COUNT, REGION_COUNT_DESC), rsWrap.getNumOnlineRegions())
+    mrb.addGauge(Interns.info(REGION_COUNT, REGION_COUNT_DESC), rsWrap.getNumOnlineRegions())
       .addGauge(Interns.info(STORE_COUNT, STORE_COUNT_DESC), rsWrap.getNumStores())
       .addGauge(Interns.info(WALFILE_COUNT, WALFILE_COUNT_DESC), rsWrap.getNumWALFiles())
       .addGauge(Interns.info(WALFILE_SIZE, WALFILE_SIZE_DESC), rsWrap.getWALFileSize())
@@ -611,6 +611,8 @@ public class MetricsRegionServerSourceImpl extends BaseSourceImpl
       .addGauge(Interns.info(L2_CACHE_COUNT, L2_CACHE_COUNT_DESC), rsWrap.getL2CacheCount())
       .addCounter(Interns.info(L2_CACHE_EVICTION_COUNT, L2_CACHE_EVICTION_COUNT_DESC),
         rsWrap.getL2CacheEvictedCount())
+      .addCounter(Interns.info(L2_CACHE_OVERSIZED_BLOCK_REJECT_COUNT,
+        L2_CACHE_OVERSIZED_BLOCK_REJECT_COUNT_DESC), rsWrap.getL2CacheOversizedBlockRejectCount())
       .addGauge(Interns.info(L2_CACHE_HIT_COUNT, L2_CACHE_HIT_COUNT_DESC),
         rsWrap.getL2CacheHitCount())
       .addGauge(Interns.info(L2_CACHE_HIT_CACHING_COUNT, L2_CACHE_HIT_CACHING_COUNT_DESC),
@@ -635,6 +637,12 @@ public class MetricsRegionServerSourceImpl extends BaseSourceImpl
         rsWrap.getReadRequestsRatePerSecond())
       .addGauge(Interns.info(WRITE_REQUEST_RATE_PER_SECOND, WRITE_REQUEST_RATE_DESC),
         rsWrap.getWriteRequestsRatePerSecond())
+      .addGauge(Interns.info(ACTIVE_SCANNERS, ACTIVE_SCANNERS_DESC), rsWrap.getActiveScanners());
+    return addByteBuffAllocatorGauges(mrb);
+  }
+
+  private MetricsRecordBuilder addByteBuffAllocatorGauges(MetricsRecordBuilder mrb) {
+    return mrb
       .addGauge(
         Interns.info(BYTE_BUFF_ALLOCATOR_HEAP_ALLOCATION_BYTES,
           BYTE_BUFF_ALLOCATOR_HEAP_ALLOCATION_BYTES_DESC),
@@ -651,9 +659,10 @@ public class MetricsRegionServerSourceImpl extends BaseSourceImpl
         Interns.info(BYTE_BUFF_ALLOCATOR_TOTAL_BUFFER_COUNT,
           BYTE_BUFF_ALLOCATOR_TOTAL_BUFFER_COUNT_DESC),
         rsWrap.getByteBuffAllocatorTotalBufferCount())
-      .addGauge(Interns.info(BYTE_BUFF_ALLOCATOR_USED_BUFFER_COUNT,
-        BYTE_BUFF_ALLOCATOR_USED_BUFFER_COUNT_DESC), rsWrap.getByteBuffAllocatorUsedBufferCount())
-      .addGauge(Interns.info(ACTIVE_SCANNERS, ACTIVE_SCANNERS_DESC), rsWrap.getActiveScanners());
+      .addGauge(
+        Interns.info(BYTE_BUFF_ALLOCATOR_USED_BUFFER_COUNT,
+          BYTE_BUFF_ALLOCATOR_USED_BUFFER_COUNT_DESC),
+        rsWrap.getByteBuffAllocatorUsedBufferCount());
   }
 
   @Override

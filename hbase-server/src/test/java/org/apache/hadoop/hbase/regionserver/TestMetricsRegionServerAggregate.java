@@ -23,6 +23,7 @@ import static org.mockito.Mockito.when;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.OptionalLong;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -32,6 +33,12 @@ import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HDFSBlocksDistribution;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.client.RegionInfo;
+import org.apache.hadoop.hbase.io.hfile.BlockCache;
+import org.apache.hadoop.hbase.io.hfile.CacheTestUtils;
+import org.apache.hadoop.hbase.io.hfile.CacheTestUtils.HFileBlockPair;
+import org.apache.hadoop.hbase.io.hfile.CombinedBlockCache;
+import org.apache.hadoop.hbase.io.hfile.LruBlockCache;
+import org.apache.hadoop.hbase.io.hfile.bucket.BucketCache;
 import org.apache.hadoop.hbase.ipc.RpcServerInterface;
 import org.apache.hadoop.hbase.testclassification.RegionServerTests;
 import org.apache.hadoop.hbase.testclassification.SmallTests;
@@ -222,6 +229,38 @@ public class TestMetricsRegionServerAggregate {
     runnable.run();
     assertEquals(numLogFiles, wrapper.getNumWALFiles());
     assertEquals(logFileSize, wrapper.getWALFileSize());
+  }
+
+  @Test
+  public void testL2CacheOversizedBlockRejectCount() throws Exception {
+    HFileBlockPair pair = CacheTestUtils.generateHFileBlocks(8 * 1024, 1)[0];
+    // The only bucket is a byte smaller than the block, so the bucket cache has to reject it.
+    BucketCache bucketCache = new BucketCache("offheap", 4 * 1024 * 1024, 8 * 1024,
+      new int[] { pair.getBlock().getSerializedLength() - 1 }, 1, 64, null);
+    BlockCache blockCache =
+      new CombinedBlockCache(new LruBlockCache(1024 * 1024, 8 * 1024), bucketCache);
+    try {
+      Configuration conf = HBaseConfiguration.create();
+      HRegionServer regionServer = mock(HRegionServer.class);
+      when(regionServer.getConfiguration()).thenReturn(conf);
+      RpcServerInterface rpcServer = mock(RpcServerInterface.class);
+      when(regionServer.getRpcServer()).thenReturn(rpcServer);
+      WALFactory walFactory = mock(WALFactory.class);
+      when(regionServer.getWalFactory()).thenReturn(walFactory);
+      ServerName serverName = mock(ServerName.class);
+      when(serverName.getHostname()).thenReturn("foo");
+      when(regionServer.getServerName()).thenReturn(serverName);
+      when(regionServer.getBlockCache()).thenReturn(Optional.of(blockCache));
+
+      // A data block goes to the L2 cache, which cannot hold it.
+      blockCache.cacheBlock(pair.getBlockName(), pair.getBlock());
+
+      MetricsRegionServerWrapperImpl wrapper = new MetricsRegionServerWrapperImpl(regionServer);
+      assertEquals(1, wrapper.getL2CacheOversizedBlockRejectCount());
+      assertEquals(1, wrapper.getBlockCacheFailedInsertions());
+    } finally {
+      blockCache.shutdown();
+    }
   }
 
   private HRegion getMockedRegion(Answer defaultAnswer, String name, String localOnHost,

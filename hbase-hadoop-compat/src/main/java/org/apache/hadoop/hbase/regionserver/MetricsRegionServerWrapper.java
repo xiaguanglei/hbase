@@ -430,6 +430,12 @@ public interface MetricsRegionServerWrapper {
   long getL2CacheEvictedCount();
 
   /**
+   * Number of blocks not cached in the L2 cache because they are larger than its largest bucket
+   * size. These are also counted in {@link #getBlockCacheFailedInsertions()}.
+   */
+  long getL2CacheOversizedBlockRejectCount();
+
+  /**
    * Hit count of L2 cache.
    */
   long getL2CacheHitCount();

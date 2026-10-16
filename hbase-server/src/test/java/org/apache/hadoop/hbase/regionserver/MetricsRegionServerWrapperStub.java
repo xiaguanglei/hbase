@@ -463,6 +463,11 @@ public class MetricsRegionServerWrapperStub implements MetricsRegionServerWrappe
   }
 
   @Override
+  public long getL2CacheOversizedBlockRejectCount() {
+    return 140;
+  }
+
+  @Override
   public long getL2CacheHitCount() {
     return 800;
   }
