@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hbase.io;
 
+import com.google.errorprone.annotations.RestrictedApi;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
@@ -288,9 +289,26 @@ public class ByteBuffAllocator {
     return (SingleByteBuff) ByteBuff.wrap(allocateOnHeap(bufSize));
   }
 
-  private ByteBuffer allocateOnHeap(int size) {
+  // Package private for tests to inject heap allocation failures.
+  @RestrictedApi(explanation = "Should only be called in tests", link = "",
+      allowedOnPath = ".*/ByteBuffAllocator.java|.*/src/test/.*")
+  ByteBuffer allocateOnHeap(int size) {
     heapAllocationBytes.add(size);
     return ByteBuffer.allocate(size);
+  }
+
+  // Package private for tests to inject direct allocation failures.
+  @RestrictedApi(explanation = "Should only be called in tests", link = "",
+      allowedOnPath = ".*/ByteBuffAllocator.java|.*/src/test/.*")
+  ByteBuffer allocateDirect(int size) {
+    return ByteBuffer.allocateDirect(size);
+  }
+
+  // Package private for tests to inject failures while wrapping pooled buffers.
+  @RestrictedApi(explanation = "Should only be called in tests", link = "",
+      allowedOnPath = ".*/ByteBuffAllocator.java|.*/src/test/.*")
+  ByteBuff wrap(List<ByteBuffer> buffers, Recycler recycler) {
+    return ByteBuff.wrap(buffers, recycler);
   }
 
   /**
@@ -310,39 +328,53 @@ public class ByteBuffAllocator {
     int reminder = size % bufSize;
     int len = size / bufSize + (reminder > 0 ? 1 : 0);
     List<ByteBuffer> bbs = new ArrayList<>(len);
-    // Allocate from ByteBufferPool until the remaining is less than minSizeForReservoirUse or
-    // reservoir is exhausted.
-    int remain = size;
-    while (remain >= minSizeForReservoirUse) {
-      ByteBuffer bb = this.getBuffer();
-      if (bb == null) {
-        break;
-      }
-      bbs.add(bb);
-      remain -= bufSize;
-    }
-    int lenFromReservoir = bbs.size();
-    if (remain > 0) {
-      // If the last ByteBuffer is too small or the reservoir can not provide more ByteBuffers, we
-      // just allocate the ByteBuffer from on-heap.
-      bbs.add(allocateOnHeap(remain));
-    }
-
-    ByteBuff bb;
-    // we only need a recycler if we successfully pulled from the pool
-    // this matters for determining whether to add leak detection in RefCnt
-    if (lenFromReservoir == 0) {
-      bb = ByteBuff.wrap(bbs);
-    } else {
-      bb = ByteBuff.wrap(bbs, () -> {
-        for (int i = 0; i < lenFromReservoir; i++) {
-          this.putbackBuffer(bbs.get(i));
+    // Pooled buffers are owned by this method until the returned ByteBuff's recycler takes them
+    // over. If anything below fails (e.g. a direct or heap allocation throws OutOfMemoryError),
+    // return them to the pool, otherwise they would be lost for the lifetime of the allocator.
+    int lenFromReservoir = 0;
+    try {
+      // Allocate from ByteBufferPool until the remaining is less than minSizeForReservoirUse or
+      // reservoir is exhausted.
+      int remain = size;
+      while (remain >= minSizeForReservoirUse) {
+        ByteBuffer bb = this.getBuffer();
+        if (bb == null) {
+          break;
         }
-      });
-    }
+        bbs.add(bb);
+        lenFromReservoir++;
+        remain -= bufSize;
+      }
+      if (remain > 0) {
+        // If the last ByteBuffer is too small or the reservoir can not provide more ByteBuffers,
+        // we just allocate the ByteBuffer from on-heap.
+        bbs.add(allocateOnHeap(remain));
+      }
 
-    bb.limit(size);
-    return bb;
+      ByteBuff bb;
+      // we only need a recycler if we successfully pulled from the pool
+      // this matters for determining whether to add leak detection in RefCnt
+      if (lenFromReservoir == 0) {
+        bb = ByteBuff.wrap(bbs);
+      } else {
+        final int pooled = lenFromReservoir;
+        bb = wrap(bbs, () -> {
+          for (int i = 0; i < pooled; i++) {
+            this.putbackBuffer(bbs.get(i));
+          }
+        });
+      }
+
+      bb.limit(size);
+      return bb;
+    } catch (Throwable t) {
+      // Throwable, not just OutOfMemoryError: the buffers must go back whatever is thrown, and
+      // t is rethrown unchanged.
+      for (int i = 0; i < lenFromReservoir; i++) {
+        putbackBuffer(bbs.get(i));
+      }
+      throw t;
+    }
   }
 
   /**
@@ -390,8 +422,17 @@ public class ByteBuffAllocator {
       if (!this.usedBufCount.compareAndSet(c, c + 1)) {
         continue;
       }
+      ByteBuffer newBuf;
+      try {
+        newBuf = allocateDirect(bufSize);
+      } catch (Throwable t) {
+        // The buffer was never created, release the reserved slot so the pool can grow later.
+        // Throwable, not just OutOfMemoryError: the slot must be released whatever is thrown.
+        this.usedBufCount.decrementAndGet();
+        throw t;
+      }
       poolAllocationBytes.add(bufSize);
-      return ByteBuffer.allocateDirect(bufSize);
+      return newBuf;
     }
   }
 

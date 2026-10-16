@@ -22,10 +22,12 @@ import static org.apache.hadoop.hbase.io.ByteBuffAllocator.getHeapAllocationRati
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import java.nio.ByteBuffer;
+import java.util.List;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.nio.ByteBuff;
@@ -153,6 +155,80 @@ public class TestByteBuffAllocator {
     assertEquals(21904, alloc.getHeapAllocationBytes());
     assertEquals(10, alloc.getUsedBufferCount());
     buff.release();
+  }
+
+  @Test
+  public void testFailedDirectAllocationDoesNotLeakPoolCapacity() {
+    int bufSize = 1024;
+    FailingAllocator alloc = new FailingAllocator(1, bufSize, bufSize / 6);
+    alloc.failOnDirectAllocation = 1;
+    assertThrows(OutOfMemoryError.class, () -> alloc.allocate(bufSize));
+    // The slot reserved for the failed direct allocation must be given back.
+    assertEquals(0, alloc.getUsedBufferCount());
+    assertEquals(0, alloc.getFreeBufferCount());
+
+    // The pool can still create its only buffer, so no heap fallback is needed.
+    ByteBuff buff = alloc.allocate(bufSize);
+    assertFalse(buff.hasArray());
+    assertEquals(0, alloc.getHeapAllocationBytes());
+    buff.release();
+    assertEquals(1, alloc.getUsedBufferCount());
+    assertEquals(1, alloc.getFreeBufferCount());
+  }
+
+  @Test
+  public void testFailedDirectAllocationReturnsAcquiredBuffers() {
+    int bufSize = 1024;
+    FailingAllocator alloc = new FailingAllocator(4, bufSize, bufSize / 6);
+    alloc.failOnDirectAllocation = 3;
+    assertThrows(OutOfMemoryError.class, () -> alloc.allocate(4 * bufSize));
+    // The two buffers created before the failure must be back in the pool.
+    assertEquals(2, alloc.getUsedBufferCount());
+    assertEquals(2, alloc.getFreeBufferCount());
+
+    ByteBuff buff = alloc.allocate(4 * bufSize);
+    assertFalse(buff.hasArray());
+    assertEquals(0, alloc.getHeapAllocationBytes());
+    buff.release();
+    assertEquals(4, alloc.getUsedBufferCount());
+    assertEquals(4, alloc.getFreeBufferCount());
+  }
+
+  @Test
+  public void testFailedHeapAllocationReturnsAcquiredBuffers() {
+    int bufSize = 1024;
+    FailingAllocator alloc = new FailingAllocator(2, bufSize, bufSize / 6);
+    alloc.failOnHeapAllocation = true;
+    // Two buffers come from the pool, the remaining bufSize bytes from heap, which fails.
+    assertThrows(OutOfMemoryError.class, () -> alloc.allocate(3 * bufSize));
+    assertEquals(2, alloc.getUsedBufferCount());
+    assertEquals(2, alloc.getFreeBufferCount());
+
+    alloc.failOnHeapAllocation = false;
+    ByteBuff buff = alloc.allocate(2 * bufSize);
+    assertFalse(buff.hasArray());
+    buff.release();
+    assertEquals(2, alloc.getUsedBufferCount());
+    assertEquals(2, alloc.getFreeBufferCount());
+  }
+
+  @Test
+  public void testFailedWrapReturnsAcquiredBuffers() {
+    int bufSize = 1024;
+    FailingAllocator alloc = new FailingAllocator(2, bufSize, bufSize / 6);
+    alloc.failOnWrap = true;
+    // Both buffers come from the pool, then wrapping them into a ByteBuff fails.
+    assertThrows(OutOfMemoryError.class, () -> alloc.allocate(2 * bufSize));
+    assertEquals(2, alloc.getUsedBufferCount());
+    assertEquals(2, alloc.getFreeBufferCount());
+
+    alloc.failOnWrap = false;
+    ByteBuff buff = alloc.allocate(2 * bufSize);
+    assertFalse(buff.hasArray());
+    assertEquals(0, alloc.getHeapAllocationBytes());
+    buff.release();
+    assertEquals(2, alloc.getUsedBufferCount());
+    assertEquals(2, alloc.getFreeBufferCount());
   }
 
   @Test
@@ -509,4 +585,42 @@ public class TestByteBuffAllocator {
     }
   }
 
+  /**
+   * Injects an OutOfMemoryError into the n-th direct allocation, every heap allocation and/or the
+   * wrapping of pooled buffers into a ByteBuff.
+   */
+  private static final class FailingAllocator extends ByteBuffAllocator {
+    private int failOnDirectAllocation;
+    private boolean failOnHeapAllocation;
+    private boolean failOnWrap;
+    private int directAllocations;
+
+    FailingAllocator(int maxBufCount, int bufSize, int minSizeForReservoirUse) {
+      super(true, maxBufCount, bufSize, minSizeForReservoirUse);
+    }
+
+    @Override
+    ByteBuffer allocateDirect(int size) {
+      if (++directAllocations == failOnDirectAllocation) {
+        throw new OutOfMemoryError("Injected direct allocation failure");
+      }
+      return super.allocateDirect(size);
+    }
+
+    @Override
+    ByteBuffer allocateOnHeap(int size) {
+      if (failOnHeapAllocation) {
+        throw new OutOfMemoryError("Injected heap allocation failure");
+      }
+      return super.allocateOnHeap(size);
+    }
+
+    @Override
+    ByteBuff wrap(List<ByteBuffer> buffers, Recycler recycler) {
+      if (failOnWrap) {
+        throw new OutOfMemoryError("Injected wrap failure");
+      }
+      return super.wrap(buffers, recycler);
+    }
+  }
 }
