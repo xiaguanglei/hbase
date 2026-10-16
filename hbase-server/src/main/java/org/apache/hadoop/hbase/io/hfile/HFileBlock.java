@@ -63,6 +63,7 @@ import org.apache.hadoop.hbase.nio.MultiByteBuff;
 import org.apache.hadoop.hbase.nio.SingleByteBuff;
 import org.apache.hadoop.hbase.regionserver.ShipperListener;
 import org.apache.hadoop.hbase.trace.HBaseSemanticAttributes.ReadType;
+import org.apache.hadoop.hbase.util.ByteBufferUtils;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.ChecksumType;
 import org.apache.hadoop.hbase.util.ClassSize;
@@ -1984,15 +1985,24 @@ public class HFileBlock implements Cacheable {
   public int getSerializedLength() {
     if (bufWithoutChecksum != null) {
       // Include extra bytes for block metadata.
-      return this.bufWithoutChecksum.limit() + BLOCK_METADATA_SPACE;
+      return getSerializedBufferLength() + BLOCK_METADATA_SPACE;
     }
     return 0;
+  }
+
+  /**
+   * Returns how many bytes of {@link #bufWithoutChecksum}, from index 0, are serialized ahead of
+   * the block metadata, i.e. the header and data without checksums. This is the range both
+   * {@link #serialize(ByteBuffer, boolean)} and {@link #compareSerializedContent(HFileBlock)} use.
+   */
+  private int getSerializedBufferLength() {
+    return bufWithoutChecksum.limit();
   }
 
   // Cacheable implementation
   @Override
   public void serialize(ByteBuffer destination, boolean includeNextBlockMetadata) {
-    this.bufWithoutChecksum.get(destination, 0, getSerializedLength() - BLOCK_METADATA_SPACE);
+    this.bufWithoutChecksum.get(destination, 0, getSerializedBufferLength());
     destination = addMetaData(destination, includeNextBlockMetadata);
 
     // Make it ready for reading. flip sets position to zero and limit to current position which
@@ -2021,6 +2031,78 @@ public class HFileBlock implements Cacheable {
       destination.putInt(this.nextBlockOnDiskSize);
     }
     return destination;
+  }
+
+  /**
+   * Compares the bytes {@link #serialize(ByteBuffer, boolean)} writes for this block and for
+   * {@code other} without the next block metadata, in place rather than on serialized copies.
+   * Returns 0 if and only if those bytes are equal. Otherwise the block with fewer bytes orders
+   * first, and blocks of the same length order by their first differing byte, compared as unsigned.
+   * Only absolute reads are used: positions, limits and reference counts of both blocks stay as
+   * they are.
+   * <p>
+   * Both blocks must stay retained (refCnt &gt; 0) for the duration of the call, as for
+   * {@link #serialize(ByteBuffer, boolean)}: their buffers may be pooled off-heap memory that is
+   * recycled once released. {@link BlockCacheUtil#shouldReplaceExistingCacheBlock} gets the
+   * existing block through getBlock, which retains it until after the compare, and the new block is
+   * still held by the thread caching it.
+   */
+  int compareSerializedContent(HFileBlock other) {
+    int length = getSerializedBufferLength();
+    int otherLength = other.getSerializedBufferLength();
+    if (length != otherLength) {
+      return Integer.compare(length, otherLength);
+    }
+    int result = compareBuffers(bufWithoutChecksum, other.bufWithoutChecksum, length);
+    if (result != 0) {
+      return result;
+    }
+    // Then what addMetaData writes: the checksum flag, 1 or 0, and the offset, big-endian, so the
+    // offset bytes order the way Long.compareUnsigned orders the offsets.
+    if (fileContext.isUseHBaseChecksum() != other.fileContext.isUseHBaseChecksum()) {
+      return fileContext.isUseHBaseChecksum() ? 1 : -1;
+    }
+    return Long.compareUnsigned(offset, other.offset);
+  }
+
+  /**
+   * Compares {@code [0, length)} of two buffers holding at least {@code length} bytes each. Walks
+   * the {@link ByteBuff#nioByteBuffers()} of both, each from index 0 up to its limit as
+   * {@link ByteBuff#get(ByteBuffer, int, int)} copies them, and compares the overlapping parts with
+   * {@link ByteBufferUtils#compareTo(ByteBuffer, int, int, ByteBuffer, int, int)}, a word at a time
+   * for heap and direct buffers alike. ByteBuff#compareTo would go byte by byte unless both buffers
+   * are backed by an array.
+   */
+  private static int compareBuffers(ByteBuff left, ByteBuff right, int length) {
+    ByteBuffer[] leftItems = left.nioByteBuffers();
+    ByteBuffer[] rightItems = right.nioByteBuffers();
+    int leftIndex = 0;
+    int rightIndex = 0;
+    int leftOffset = 0;
+    int rightOffset = 0;
+    int remaining = length;
+    while (remaining > 0) {
+      ByteBuffer l = leftItems[leftIndex];
+      ByteBuffer r = rightItems[rightIndex];
+      int n = Math.min(remaining, Math.min(l.limit() - leftOffset, r.limit() - rightOffset));
+      int result = ByteBufferUtils.compareTo(l, leftOffset, n, r, rightOffset, n);
+      if (result != 0) {
+        return result;
+      }
+      remaining -= n;
+      leftOffset += n;
+      rightOffset += n;
+      // Move on from used up items, which also skips empty ones.
+      if (leftOffset == l.limit()) {
+        leftIndex++;
+        leftOffset = 0;
+      }
+      if (rightOffset == r.limit()) {
+        rightIndex++;
+        rightOffset = 0;
+      }
+    }
+    return 0;
   }
 
   // Cacheable implementation

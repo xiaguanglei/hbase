@@ -175,6 +175,10 @@ public class BlockCacheUtil {
 
   private static int compareCacheBlock(Cacheable left, Cacheable right,
     boolean includeNextBlockMetadata) {
+    if (!includeNextBlockMetadata && left instanceof HFileBlock && right instanceof HFileBlock) {
+      // Equal exactly when the serialized blocks below would be, without copying either block.
+      return ((HFileBlock) left).compareSerializedContent((HFileBlock) right);
+    }
     ByteBuffer l = ByteBuffer.allocate(left.getSerializedLength());
     left.serialize(l, includeNextBlockMetadata);
     ByteBuffer r = ByteBuffer.allocate(right.getSerializedLength());
